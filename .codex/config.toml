@@ -1,0 +1,3 @@
+[[skills.config]]
+path = "E://nus_mcomp_term3/skills-github-action/.codex/skills/commitGen-skill/SKILL.md"
+enabled = false
