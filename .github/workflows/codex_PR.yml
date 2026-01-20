@@ -1,10 +1,21 @@
 name: Codex pull request review
 on:
-  pull_request:
+  pull_request: 
     types: [opened, synchronize, reopened]
+  workflow_dispatch:  # 添加手动触发
+    inputs:
+      pr_number:
+        description: 'PR number to review (leave empty for manual run without PR context)'
+        required: false
+        type: number
+      debug_mode:
+        description: 'Enable debug output'
+        required: false
+        type: boolean
+        default: false
 
-jobs:
-  codex:
+jobs: 
+  codex: 
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -12,41 +23,79 @@ jobs:
     outputs:
       final_message: ${{ steps.run_codex.outputs.final-message }}
     steps:
+      - name: Set PR context
+        id: set_pr
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.pr_number }}" ]; then
+            echo "pr_number=${{ inputs. pr_number }}" >> $GITHUB_OUTPUT
+            echo "ref=refs/pull/${{ inputs.pr_number }}/merge" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "pr_number=${{ github.event. pull_request.number }}" >> $GITHUB_OUTPUT
+            echo "ref=refs/pull/${{ github.event.pull_request. number }}/merge" >> $GITHUB_OUTPUT
+          else
+            echo "pr_number=" >> $GITHUB_OUTPUT
+            echo "ref=${{ github.ref }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Enable debug logging
+        if: inputs.debug_mode == true
+        run: |
+          echo "Debug mode enabled"
+          echo "Event:  ${{ github.event_name }}"
+          echo "PR Number:  ${{ steps.set_pr. outputs.pr_number }}"
+          echo "Ref: ${{ steps.set_pr.outputs.ref }}"
+
       - uses: actions/checkout@v5
         with:
-          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          ref: ${{ steps.set_pr.outputs.ref }}
 
       - name: Pre-fetch base and head refs
-        run: |
+        if: steps.set_pr.outputs.pr_number != ''
+        run:  |
           git fetch --no-tags origin \
-            ${{ github.event.pull_request.base.ref }} \
-            +refs/pull/${{ github.event.pull_request.number }}/head
+            ${{ github.event.pull_request.base.ref || 'main' }} \
+            +refs/pull/${{ steps.set_pr. outputs.pr_number }}/head
 
       - name: Run Codex
         id: run_codex
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          prompt-file: .github/codex/prompts/review.md
+          prompt-file: . github/codex/prompts/review.md
           output-file: codex-output.md
           safety-strategy: unsafe
           sandbox: workspace-write
 
+      - name: Upload Codex output (for debugging)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name:  codex-output
+          path:  codex-output.md
+          retention-days: 7
+
   post_feedback:
     runs-on: ubuntu-latest
-    needs: codex
-    if: needs.codex.outputs.final_message != ''
+    needs:  codex
+    if: needs. codex.outputs.final_message != ''
     steps:
       - name: Post Codex feedback
         uses: actions/github-script@v7
-        with:
+        with: 
           github-token: ${{ github.token }}
           script: |
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.payload.pull_request.number,
-              body: process.env.CODEX_FINAL_MESSAGE,
-            });
+            const prNumber = ${{ github.event.pull_request.number || inputs.pr_number || 0 }};
+            if (prNumber > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: process.env.CODEX_FINAL_MESSAGE,
+              });
+              console.log(`Posted comment to PR #${prNumber}`);
+            } else {
+              console.log('No PR number available, skipping comment posting');
+              console.log('Codex output:', process.env. CODEX_FINAL_MESSAGE);
+            }
         env:
           CODEX_FINAL_MESSAGE: ${{ needs.codex.outputs.final_message }}
