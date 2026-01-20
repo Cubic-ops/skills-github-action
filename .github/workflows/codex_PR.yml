@@ -1,44 +1,86 @@
-name: Codex pull request review
+name: Claude pull request review
 on:
   pull_request:
     types: [opened, synchronize, reopened]
 
 jobs:
-  codex:
-    runs-on: ubuntu-latest
-    permissions:
+  claude_review:
+    runs-on:  ubuntu-latest
+    permissions: 
       contents: read
       pull-requests: write
-    outputs:
-      final_message: ${{ steps.run_codex.outputs.final-message }}
     steps:
       - uses: actions/checkout@v5
-        with:
+        with: 
           ref: refs/pull/${{ github.event.pull_request.number }}/merge
 
       - name: Pre-fetch base and head refs
         run: |
           git fetch --no-tags origin \
-            ${{ github.event.pull_request.base.ref }} \
+            ${{ github.event. pull_request.base.ref }} \
             +refs/pull/${{ github.event.pull_request.number }}/head
 
-      - name: Run Codex
-        id: run_codex
-        uses: openai/codex-action@v1
-        with:
-          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          prompt-file: .github/codex/prompts/review.md
-          output-file: codex-output.md
-          safety-strategy: unsafe
-          sandbox: workspace-write
+      - name: Get PR diff
+        id: get_diff
+        run: |
+          git diff origin/${{ github.event.pull_request.base.ref }}... HEAD > pr_diff.txt
+          echo "diff_file=pr_diff.txt" >> $GITHUB_OUTPUT
 
-  post_feedback:
-    runs-on: ubuntu-latest
-    needs: codex
-    if: needs.codex.outputs.final_message != ''
-    steps:
-      - name: Post Codex feedback
-        uses: actions/github-script@v7
+      - name: Read review prompt
+        id: read_prompt
+        run: |
+          if [ -f . github/codex/prompts/review.md ]; then
+            PROMPT=$(cat .github/codex/prompts/review.md)
+          else
+            PROMPT="Please review this pull request and provide constructive feedback on code quality, potential issues, and improvements."
+          fi
+          echo "prompt<<EOF" >> $GITHUB_OUTPUT
+          echo "$PROMPT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Run Claude Review
+        id: run_claude
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+        run: |
+          # Read the diff
+          DIFF_CONTENT=$(cat pr_diff.txt)
+          
+          # Prepare the request payload
+          cat > request. json <<EOF
+          {
+            "model": "claude-3-5-sonnet-20241022",
+            "max_tokens": 4096,
+            "messages": [
+              {
+                "role": "user",
+                "content": "${{ steps.read_prompt.outputs. prompt }}\n\nHere is the pull request diff:\n\n${DIFF_CONTENT}"
+              }
+            ]
+          }
+          EOF
+          
+          # Call Claude API
+          RESPONSE=$(curl -s https://api.anthropic.com/v1/messages \
+            -H "Content-Type: application/json" \
+            -H "x-api-key: ${ANTHROPIC_API_KEY}" \
+            -H "anthropic-version: 2023-06-01" \
+            -d @request.json)
+          
+          # Extract the review content
+          REVIEW=$(echo "$RESPONSE" | jq -r '.content[0].text')
+          
+          # Save to output file
+          echo "$REVIEW" > codex-output.md
+          
+          # Set output for next job
+          echo "final_message<<EOF" >> $GITHUB_OUTPUT
+          echo "$REVIEW" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Post Claude feedback
+        if: steps.run_claude.outputs.final_message != ''
+        uses:  actions/github-script@v7
         with:
           github-token: ${{ github.token }}
           script: |
@@ -46,7 +88,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.payload.pull_request.number,
-              body: process.env.CODEX_FINAL_MESSAGE,
+              body: `## 🤖 Claude AI Review\n\n${process.env.CLAUDE_REVIEW}`,
             });
         env:
-          CODEX_FINAL_MESSAGE: ${{ needs.codex.outputs.final_message }}
+          CLAUDE_REVIEW:  ${{ steps.run_claude. outputs.final_message }}
