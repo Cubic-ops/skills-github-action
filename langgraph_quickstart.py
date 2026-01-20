@@ -18,7 +18,10 @@ def _set_env(var: str):
 
 _set_env("ANTHROPIC_API_KEY")
 
-model = ChatAnthropic(model="claude-sonnet-4-5-20250929", temperature=0)
+llm = ChatAnthropic(model="claude-sonnet-4-5-20250929", temperature=0)
+
+
+model = init_chat_model("claude-haiku-4-5-20251001", temperature=0)
 
 
 @tool
